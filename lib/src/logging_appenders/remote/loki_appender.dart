@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:developer';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -41,6 +42,7 @@ class LokiApiAppender {
   Future<bool> sendLogEventsWithDio(List<LogEntry> entries) async {
     final jsonObject = LokiPushBody([LokiStream(labelsString, entries)]).toJson();
     final jsonBody = json.encode(jsonObject, toEncodable: _logEntryToJson);
+    log('jsonBody: $jsonBody');
     try {
       await _client.post<dynamic>('http://$server/api/prom/push',
         data: jsonBody,
@@ -49,8 +51,10 @@ class LokiApiAppender {
           contentType: ContentType.json.value,
         ),
       );
+      log('log sent to loki successfully');
       return true;
     } catch (e, stackTrace) {
+      log('failed to send log to loki: $e, $stackTrace');
       if (e is DioException) {
         final message = e.response != null ? 'response: ${e.response!.data}' : null;
         throw Future.error(e, stackTrace);
