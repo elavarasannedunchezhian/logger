@@ -4,7 +4,6 @@ import 'dart:developer';
 import 'dart:io';
 
 import 'package:log/logging.dart';
-import 'package:log/src/logging/log_context.dart';
 import 'package:log/src/logging_appenders/remote/loki_appender.dart';
 import 'package:log/src/logging_appenders/rotating_file_appender.dart';
 import '../base_remote_appender.dart';
@@ -131,7 +130,7 @@ class RotateLogs {
       return;
     }
 
-    if (!LogContext.isReady) {
+    if (LogContext.labels.isEmpty) {
       print('Log context is not ready');
       return;
     }

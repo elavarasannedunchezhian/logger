@@ -1,16 +1,24 @@
 import 'dart:convert';
 import 'dart:io';
+import 'package:path/path.dart' as p;
 
 class LogTracker {
   static late File trackerFile;
   static Map<String, dynamic> tracker = {};
 
-  static Future<void> init(Directory logDir) async {
-    trackerFile = File('${logDir.path}/log_tracker.json');
+  static Future<void> init(Directory logDirectory) async {
+    trackerFile = File(p.join(logDirectory.path, 'log_tracker.json'));
     if (!trackerFile.existsSync()) {
-      trackerFile.writeAsStringSync(jsonEncode({'files': {}}));
+      trackerFile.writeAsStringSync(jsonEncode({'files': {}}), flush: true);
     }
     tracker = jsonDecode(await trackerFile.readAsString());
+
+    try {
+      tracker = jsonDecode(await trackerFile.readAsString());
+    } catch (_) {
+      tracker = {'files': {}};
+      await trackerFile.writeAsString(jsonEncode(tracker), flush: true);
+    }
   }
 
   static Map<String, dynamic> getFile(String name) {
