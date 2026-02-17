@@ -12,8 +12,9 @@ class LokiApiAppender {
     required this.server,
     required this.username,
     required this.password,
-    required Map<String, String> labels,
-  })  : defaultLabels = labels,
+    required this.labels,
+  })  : labelsString =
+            '{${labels.entries.map((entry) => '${entry.key}="${entry.value}"').join(',')}}',
         authHeader = 'Basic ${base64.encode(utf8.encode([
           username,
           password
@@ -23,7 +24,8 @@ class LokiApiAppender {
   final String username;
   final String password;
   final String authHeader;
-  final Map<String, String> defaultLabels;
+  final Map<String, String> labels;
+  final String labelsString;
 
   static final DateFormat _dateFormat =
       DateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
@@ -35,74 +37,27 @@ class LokiApiAppender {
     return value;
   }
 
-  Future<bool> sendLogEventsWithDio(
-    List<LogEntry> entries, 
-    Map<String, String> runtimeLabels,
-  ) async {
-    if (entries.isEmpty) return true;
-    final streams = <Map<String, dynamic>>[];
-    final Map<String, List<LogEntry>> grouped = {};
-
-    for (final entry in entries) {
-      final mergedLabels = {
-        ...defaultLabels,
-        ...runtimeLabels,
-        ...entry.lineLabels,
-      };
-
-      final labelString = buildLabelString(mergedLabels);
-
-      grouped.putIfAbsent(labelString, () => []).add(entry);
-    }
-
-    for (final group in grouped.entries) {
-      streams.add({
-        "stream": _parseLabelString(group.key),
-        "values": group.value
-            .map((e) => [e.ts.toString(), e.line])
-            .toList(),
-      });
-    }
-
-    final body = jsonEncode({"streams": streams});
-    log('Sending logs to Loki: $body');
+  Future<bool> sendLogEventsWithDio(List<LogEntry> entries) async {
+    final jsonObject = LokiPushBody([LokiStream(labelsString, entries)]).toJson();
+    final jsonBody = json.encode(jsonObject, toEncodable: _logEntryToJson);
+    log('jsonBody: $jsonBody');
     try {
       final response = await Dio().post('http://$server/api/prom/push',
-        data: body,
+        data: jsonBody,
         options: Options(
           headers: <String, String>{HttpHeaders.authorizationHeader: authHeader},
           contentType: ContentType.json.value,
         ),
       );
-
-      log('Response: $response');
-      return response.statusCode == 204;
-    } catch (e, st) {
-      log('Error while sending logs to Loki: $e $st');
+      log('log sent to loki successfully : $response');
+      return response.statusCode == 200;
+    } catch (e, stackTrace) {
+      log('failed to send log to loki: $e, $stackTrace');
       return false;
     }
   }
 
-  String buildLabelString(Map<String, String> merged) {
-    return '{${merged.entries.map((e) => '${e.key}="${e.value}"').join(',')}}';
-  }
-
-  Map<String, String> _parseLabelString(String labelString) {
-    final content = labelString.substring(1, labelString.length - 1);
-    final parts = content.split(',');
-
-    final map = <String, String>{};
-
-    for (final p in parts) {
-      final kv = p.split('=');
-      if (kv.length == 2) {
-        map[kv[0]] = kv[1].replaceAll('"', '');
-      }
-    }
-    return map;
-  }
-
-  dynamic logEntryToJson(dynamic obj) {
+  dynamic _logEntryToJson(dynamic obj) {
     if (obj is LogEntry) {
       return {
           'ts': _dateFormat.format(obj.ts.toUtc()),
