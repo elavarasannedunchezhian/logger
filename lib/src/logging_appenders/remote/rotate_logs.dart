@@ -118,13 +118,14 @@ class RotateLogs {
           logLevel: parsed['level'],
           line: parsed['message'],
           lineLabels: {
-            ...LogContext.labels,
             'app': parsed['loggerName'],
           },
         ),
       );
     }
 
+    print('Buffer size: ${buffer.length}');
+    print('Buffer capacity: $bufferSize');
     if (buffer.length < bufferSize) {
       print('Buffer is not full');
       return;
@@ -137,7 +138,7 @@ class RotateLogs {
 
     final batch = List<LogEntry>.from(buffer.take(bufferSize));
 
-    final success = await lokiAppender.sendLogEventsWithDio(batch)
+    final success = await lokiAppender.sendLogEventsWithDio(batch, LogContext.labels)
         .then((_) => true)
         .catchError((_) => false);
 

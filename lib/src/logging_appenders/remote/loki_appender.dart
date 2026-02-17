@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:developer';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -12,9 +11,8 @@ class LokiApiAppender {
     required this.server,
     required this.username,
     required this.password,
-    required this.labels,
-  })  : labelsString =
-            '{${labels.entries.map((entry) => '${entry.key}="${entry.value}"').join(',')}}',
+    required Map<String, String> labels,
+  })  : defaultLabels = labels,
         authHeader = 'Basic ${base64.encode(utf8.encode([
           username,
           password
@@ -24,13 +22,10 @@ class LokiApiAppender {
   final String username;
   final String password;
   final String authHeader;
-  final Map<String, String> labels;
-  final String labelsString;
+  final Map<String, String> defaultLabels;
 
   static final DateFormat _dateFormat =
       DateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'");
-
-  late final Dio _client = Dio();
 
   static String _encodeLineLabelValue(String value) {
     if (value.contains(' ')) {
@@ -39,32 +34,73 @@ class LokiApiAppender {
     return value;
   }
 
-  Future<bool> sendLogEventsWithDio(List<LogEntry> entries) async {
-    final jsonObject = LokiPushBody([LokiStream(labelsString, entries)]).toJson();
-    final jsonBody = json.encode(jsonObject, toEncodable: _logEntryToJson);
-    log('jsonBody: $jsonBody');
+  Future<bool> sendLogEventsWithDio(
+    List<LogEntry> entries, 
+    Map<String, String> runtimeLabels,
+  ) async {
+    if (entries.isEmpty) return true;
+    final streams = <Map<String, dynamic>>[];
+    final Map<String, List<LogEntry>> grouped = {};
+
+    for (final entry in entries) {
+      final mergedLabels = {
+        ...defaultLabels,
+        ...runtimeLabels,
+        ...entry.lineLabels,
+      };
+
+      final labelString = buildLabelString(mergedLabels);
+
+      grouped.putIfAbsent(labelString, () => []).add(entry);
+    }
+
+    for (final group in grouped.entries) {
+      streams.add({
+        "stream": _parseLabelString(group.key),
+        "values": group.value
+            .map((e) => [e.ts.toString(), e.line])
+            .toList(),
+      });
+    }
+
+    final body = jsonEncode({"streams": streams});
     try {
-      await _client.post<dynamic>('http://$server/api/prom/push',
-        data: jsonBody,
+      final response = await Dio().post('http://$server/api/prom/push',
+        data: body,
         options: Options(
           headers: <String, String>{HttpHeaders.authorizationHeader: authHeader},
           contentType: ContentType.json.value,
         ),
       );
-      log('log sent to loki successfully');
-      return true;
-    } catch (e, stackTrace) {
-      log('failed to send log to loki: $e, $stackTrace');
-      if (e is DioException) {
-        final message = e.response != null ? 'response: ${e.response!.data}' : null;
-        throw Future.error(e, stackTrace);
-      } else {
-        throw Future.error(e, stackTrace);
-      }
+
+      print('Response: $response');
+      return response.statusCode == 204;
+    } catch (e, st) {
+      print('Error while sending logs to Loki: $e $st');
+      return false;
     }
   }
 
-  dynamic _logEntryToJson(dynamic obj) {
+  String buildLabelString(Map<String, String> merged) {
+    return '{${merged.entries.map((e) => '${e.key}="${e.value}"').join(',')}}';
+  }
+
+  Map<String, String> _parseLabelString(String labelString) {
+    final content = labelString.substring(1, labelString.length - 1);
+    final parts = content.split(',');
+
+    final map = <String, String>{};
+
+    for (final p in parts) {
+      final kv = p.split('=');
+      if (kv.length == 2) {
+        map[kv[0]] = kv[1].replaceAll('"', '');
+      }
+    }
+    return map;
+  }
+
+  dynamic logEntryToJson(dynamic obj) {
     if (obj is LogEntry) {
       return {
           'ts': _dateFormat.format(obj.ts.toUtc()),
