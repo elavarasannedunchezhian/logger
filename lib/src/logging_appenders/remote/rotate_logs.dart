@@ -4,6 +4,7 @@ import 'dart:developer';
 import 'dart:io';
 
 import 'package:log/logging.dart';
+import 'package:log/src/logging/log_context.dart';
 import 'package:log/src/logging_appenders/remote/loki_appender.dart';
 import 'package:log/src/logging_appenders/rotating_file_appender.dart';
 import '../base_remote_appender.dart';
@@ -13,6 +14,8 @@ class RotateLogs {
   static Timer? _timer;
   static bool _running = false;
   static const int intervalSeconds = 10;
+  static final List<LogEntry> buffer = [];
+  static int bufferSize = 10;
 
   static late Directory logDir;
   static late File trackerFile;
@@ -23,6 +26,7 @@ class RotateLogs {
   static Future<void> init(Directory logsDirectory) async {
     logDir = logsDirectory;
     trackerFile = File(p.join(logDir.path, 'log_tracker.json'));
+    await LogContext.init(logDir);
 
     if (!trackerFile.existsSync()) {
       trackerFile.writeAsStringSync(jsonEncode({'files': {}}));
@@ -102,7 +106,6 @@ class RotateLogs {
     await raf.close();
 
     final lines = utf8.decode(bytes).split('\n');
-    final List<LogEntry> batch = [];
 
     for (final line in lines) {
       if (line.trim().isEmpty) continue;
@@ -110,21 +113,41 @@ class RotateLogs {
       final parsed = parseLogLine(line);
       if (parsed == null) continue;
 
-      batch.add(
+      buffer.add(
         LogEntry(
           ts: parsed['time'],
           logLevel: parsed['level'],
           line: parsed['message'],
-          lineLabels: {'app': parsed['loggerName']},
+          lineLabels: {
+            ...LogContext.labels,
+            'app': parsed['loggerName'],
+          },
         ),
       );
     }
+
+    if (buffer.length < bufferSize) {
+      print('Buffer is not full');
+      return;
+    }
+
+    if (!LogContext.isReady) {
+      print('Log context is not ready');
+      return;
+    }
+
+    final batch = List<LogEntry>.from(buffer.take(bufferSize));
 
     final success = await lokiAppender.sendLogEventsWithDio(batch)
         .then((_) => true)
         .catchError((_) => false);
 
-    if (!success) return;
+    if (!success) {
+      print('Failed to send batch');
+      return;
+    }
+
+    buffer.removeRange(0, bufferSize);
 
     // Advance offset even if no valid lines parsed
     entry['syncedSize'] = newOffset;
