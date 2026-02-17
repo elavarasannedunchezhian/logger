@@ -10,8 +10,8 @@ import '../base_remote_appender.dart';
 import 'package:path/path.dart' as p;
 
 class RotateLogs {
-  static Timer? _timer;
-  static bool _running = false;
+  static Timer? timer;
+  static bool running = false;
   static const int intervalSeconds = 10;
   static final List<LogEntry> buffer = [];
   static int bufferSize = 10;
@@ -19,8 +19,6 @@ class RotateLogs {
   static late Directory logDir;
   static late File trackerFile;
   static Map<String, dynamic> tracker = {};
-
-  // ---------------- INIT ----------------
 
   static Future<void> init(Directory logsDirectory) async {
     logDir = logsDirectory;
@@ -34,75 +32,63 @@ class RotateLogs {
     tracker = jsonDecode(await trackerFile.readAsString());
   }
 
-  // ---------------- TIMER ----------------
-
   static void start(RotatingFileAppender fileAppender, LokiApiAppender lokiAppender) {
-    if (_running) return;
-    _running = true;
+    if (running) return;
+    running = true;
 
-    _timer = Timer.periodic(
+    timer = Timer.periodic(
       const Duration(seconds: intervalSeconds),
-      (_) => _rotate(fileAppender, lokiAppender),
+      (_) => rotate(fileAppender, lokiAppender),
     );
   }
 
   static void stop() {
-    _running = false;
-    _timer?.cancel();
+    running = false;
+    timer?.cancel();
   }
 
-  // ---------------- CORE ROTATION ----------------
-
-  static Future<void> _rotate(
+  static Future<void> rotate(
     RotatingFileAppender fileAppender, 
     LokiApiAppender lokiAppender,
   ) async {
     final files = fileAppender.getAllLogFiles();
 
     for (final file in files) {
-      await _processFile(file, lokiAppender);
+      await processFile(file, lokiAppender);
     }
 
-    await _cleanupOldFiles();
+    await cleanupOldFiles();
   }
 
-  // ---------------- FILE PROCESSING ----------------
-  static Future<void> _processFile(File file, LokiApiAppender lokiAppender) async {
+  static Future<void> processFile(File file, LokiApiAppender lokiAppender) async {
     final fileName = p.basename(file.path);
     final stat = await file.stat();
-    final entry = _getTrackerEntry(fileName);
+    final entry = getTrackerEntry(fileName);
 
-    entry['totalSize'] = stat.size;
+    entry['readSize'] = (entry['readSize'] ?? entry['syncedSize'] ?? 0) as int;
     entry['syncedSize'] = (entry['syncedSize'] ?? 0) as int;
+    entry['totalSize'] = stat.size;
 
-    // File truncated or replaced
-    if (entry['syncedSize'] > stat.size) {
+    if (entry['readSize'] > stat.size) {
+      entry['readSize'] = 0;
       entry['syncedSize'] = 0;
       entry['status'] = 'pending';
       entry['completedAt'] = null;
+      await saveTracker();
     }
 
-    // File grew after completion
-    if (entry['status'] == 'completed' &&
-        stat.size > entry['syncedSize']) {
-      entry['status'] = 'pending';
-      entry['completedAt'] = null;
-    }
-
-    if (entry['status'] == 'completed') return;
+    if (stat.size <= entry['readSize']) return;
 
     final raf = await file.open();
-    await raf.setPosition(entry['syncedSize']);
+    await raf.setPosition(entry['readSize']);
 
-    final remaining = stat.size - entry['syncedSize'];
-    if (remaining <= 0) {
-      await raf.close();
-      return;
-    }
-
+    final remaining = stat.size - entry['readSize'];
     final bytes = await raf.read(remaining.toInt());
     final newOffset = raf.positionSync();
     await raf.close();
+
+    entry['readSize'] = newOffset;
+    await saveTracker();
 
     final lines = utf8.decode(bytes).split('\n');
 
@@ -124,46 +110,48 @@ class RotateLogs {
       );
     }
 
-    log('Buffer size: ${buffer.length}');
-    log('Buffer capacity: $bufferSize');
-    if (buffer.length < bufferSize) {
-      log('Buffer is not full');
-      return;
-    }
+    log('Buffer size: ${buffer.length} / $bufferSize');
 
     if (LogContext.labels.isEmpty) {
-      log('Log context is not ready');
+      log('Context not ready → holding logs in buffer');
       return;
     }
 
-    final batch = List<LogEntry>.from(buffer.take(bufferSize));
+    while (buffer.length >= bufferSize) {
 
-    final success = await lokiAppender.sendLogEventsWithDio(batch, LogContext.labels)
-        .then((_) => true)
-        .catchError((_) => false);
+      final batch = List<LogEntry>.from(buffer.take(bufferSize));
 
-    if (!success) {
-      log('Failed to send batch');
-      return;
+      final success = await lokiAppender
+          .sendLogEventsWithDio(batch, LogContext.labels)
+          .then((_) => true)
+          .catchError((_) => false);
+
+      if (!success) {
+        log('Loki unreachable → will retry later');
+        return;
+      }
+
+      buffer.removeRange(0, bufferSize);
+
+      log('Batch uploaded: ${batch.length}');
     }
 
-    buffer.removeRange(0, bufferSize);
+    if (buffer.isEmpty) {
+      entry['syncedSize'] = entry['readSize'];
+      entry['lastSync'] = DateTime.now().toIso8601String();
+      entry['remainingSize'] = stat.size - entry['syncedSize'];
+    }
 
-    // Advance offset even if no valid lines parsed
-    entry['syncedSize'] = newOffset;
-    entry['remainingSize'] = stat.size - newOffset;
-    entry['lastSync'] = DateTime.now().toIso8601String();
-
-    if (entry['remainingSize'] <= 0) {
+    if (entry['remainingSize'] == 0) {
       entry['status'] = 'completed';
       entry['completedAt'] = entry['lastSync'];
+    } else {
+      entry['status'] = 'pending';
     }
 
-    await _saveTracker();
+    await saveTracker();
   }
 
-
-  // Parse the log line into a structured map.
   static Map<String, dynamic>? parseLogLine(String logLine) {
     try {
       final regex = RegExp(
@@ -197,12 +185,10 @@ class RotateLogs {
     }
   }
 
-
-  // ---------------- TRACKER HELPERS ----------------
-
-  static Map<String, dynamic> _getTrackerEntry(String name) {
+  static Map<String, dynamic> getTrackerEntry(String name) {
     tracker['files'][name] ??= {
       'totalSize': 0,
+      'readSize': 0,
       'syncedSize': 0,
       'remainingSize': 0,
       'lastSync': null,
@@ -212,16 +198,14 @@ class RotateLogs {
     return tracker['files'][name];
   }
 
-  static Future<void> _saveTracker() async {
+  static Future<void> saveTracker() async {
     await trackerFile.writeAsString(
       jsonEncode(tracker),
       flush: true,
     );
   }
 
-  // ---------------- CLEANUP (30 DAYS) ----------------
-
-  static Future<void> _cleanupOldFiles() async {
+  static Future<void> cleanupOldFiles() async {
     final now = DateTime.now();
 
     for (final entry in tracker['files'].entries.toList()) {
@@ -238,7 +222,7 @@ class RotateLogs {
       }
 
       tracker['files'].remove(entry.key);
-      await _saveTracker();
+      await saveTracker();
     }
   }
 }

@@ -34,6 +34,7 @@ class LokiApiAppender {
         ...defaultLabels,
         ...runtimeLabels,
         ...entry.lineLabels,
+        'level': entry.logLevel.name,
       };
 
       streams.putIfAbsent(labels, () => []);
