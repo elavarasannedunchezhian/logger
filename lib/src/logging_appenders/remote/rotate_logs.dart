@@ -138,7 +138,7 @@ class RotateLogs {
 
     final batch = List<LogEntry>.from(buffer.take(bufferSize));
 
-    final success = await lokiAppender.sendLogEventsWithDio(batch)
+    final success = await lokiAppender.sendLogEventsWithDio(batch, LogContext.labels)
         .then((_) => true)
         .catchError((_) => false);
 
