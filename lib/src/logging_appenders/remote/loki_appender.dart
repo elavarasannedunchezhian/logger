@@ -34,13 +34,13 @@ class LokiApiAppender {
         ...defaultLabels,
         ...runtimeLabels,
         ...entry.lineLabels,
-        'level': entry.logLevel.name,
       };
 
       streams.putIfAbsent(labels, () => []);
       streams[labels]!.add([
         toNano(entry.ts),
         entry.line,
+        entry.logLevel.name,
       ]);
     }
 

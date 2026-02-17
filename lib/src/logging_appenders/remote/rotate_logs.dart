@@ -29,8 +29,16 @@ class RotateLogs {
       trackerFile.writeAsStringSync(jsonEncode({'files': {}}));
     }
 
-    tracker = jsonDecode(await trackerFile.readAsString());
+    try {
+      tracker = jsonDecode(await trackerFile.readAsString());
+      tracker['files'] ??= {};
+    } catch (_) {
+      tracker = {'files': {}};
+      await saveTracker();
+    }
   }
+
+  static DateTime lastCleanup = DateTime.fromMillisecondsSinceEpoch(0);
 
   static void start(RotatingFileAppender fileAppender, LokiApiAppender lokiAppender) {
     if (running) return;
@@ -57,7 +65,10 @@ class RotateLogs {
       await processFile(file, lokiAppender);
     }
 
-    await cleanupOldFiles();
+    if (DateTime.now().difference(lastCleanup).inHours >= 1) {
+      lastCleanup = DateTime.now();
+      await cleanupOldFiles();
+    }
   }
 
   static Future<void> processFile(File file, LokiApiAppender lokiAppender) async {
@@ -132,17 +143,33 @@ class RotateLogs {
       }
 
       buffer.removeRange(0, bufferSize);
-
       log('Batch uploaded: ${batch.length}');
     }
 
-    if (buffer.isEmpty) {
-      entry['syncedSize'] = entry['readSize'];
-      entry['lastSync'] = DateTime.now().toIso8601String();
-      entry['remainingSize'] = stat.size - entry['syncedSize'];
+    if (buffer.isNotEmpty) {
+      final batch = List<LogEntry>.from(buffer);
+
+      final success = await lokiAppender
+          .sendLogEventsWithDio(batch, LogContext.labels)
+          .then((_) => true)
+          .catchError((_) => false);
+
+      if (!success) {
+        log('Final batch failed → retry later');
+        return;
+      }
+
+      buffer.clear();
+      log('Final batch uploaded: ${batch.length}');
     }
 
-    if (entry['remainingSize'] == 0) {
+    entry['syncedSize'] = entry['readSize'];
+    entry['lastSync'] = DateTime.now().toIso8601String();
+    entry['remainingSize'] = (stat.size - entry['syncedSize']).clamp(0, stat.size);
+
+    final isActiveFile = file.path.endsWith('current.log');
+
+    if (!isActiveFile && entry['remainingSize'] == 0) {
       entry['status'] = 'completed';
       entry['completedAt'] = entry['lastSync'];
     } else {
@@ -213,7 +240,22 @@ class RotateLogs {
 
       if (data['status'] != 'completed') continue;
 
-      final completedAt = DateTime.parse(data['completedAt']);
+      final completedAtStr = data['completedAt'];
+      if (completedAtStr == null || completedAtStr.toString().isEmpty) {
+        tracker['files'].remove(entry.key);
+        await saveTracker();
+        continue;
+      }
+
+      DateTime completedAt;
+      try {
+        completedAt = DateTime.parse(completedAtStr);
+      } catch (_) {
+        tracker['files'].remove(entry.key);
+        await saveTracker();
+        continue;
+      }
+
       if (now.difference(completedAt).inDays < 30) continue;
 
       final file = File(p.join(logDir.path, entry.key));
