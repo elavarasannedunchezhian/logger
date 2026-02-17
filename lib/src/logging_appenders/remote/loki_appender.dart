@@ -65,6 +65,7 @@ class LokiApiAppender {
     }
 
     final body = jsonEncode({"streams": streams});
+    log('Sending logs to Loki: $body');
     try {
       final response = await Dio().post('http://$server/api/prom/push',
         data: body,
