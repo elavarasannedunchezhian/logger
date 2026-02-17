@@ -37,10 +37,10 @@ class LokiApiAppender {
       };
 
       streams.putIfAbsent(labels, () => []);
+      final logLine = 'level=${entry.logLevel.name} msg="${entry.line}"';
       streams[labels]!.add([
         toNano(entry.ts),
-        entry.line,
-        entry.logLevel.name,
+        logLine,
       ]);
     }
 
