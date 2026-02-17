@@ -1,3 +1,5 @@
+// ignore_for_file: constant_identifier_names
+
 class Level implements Comparable<Level> {
   final String name;
   final int value;

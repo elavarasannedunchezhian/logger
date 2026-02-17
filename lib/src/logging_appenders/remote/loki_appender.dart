@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:developer';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -73,10 +74,10 @@ class LokiApiAppender {
         ),
       );
 
-      print('Response: $response');
+      log('Response: $response');
       return response.statusCode == 204;
     } catch (e, st) {
-      print('Error while sending logs to Loki: $e $st');
+      log('Error while sending logs to Loki: $e $st');
       return false;
     }
   }

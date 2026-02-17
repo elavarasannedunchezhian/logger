@@ -124,15 +124,15 @@ class RotateLogs {
       );
     }
 
-    print('Buffer size: ${buffer.length}');
-    print('Buffer capacity: $bufferSize');
+    log('Buffer size: ${buffer.length}');
+    log('Buffer capacity: $bufferSize');
     if (buffer.length < bufferSize) {
-      print('Buffer is not full');
+      log('Buffer is not full');
       return;
     }
 
     if (LogContext.labels.isEmpty) {
-      print('Log context is not ready');
+      log('Log context is not ready');
       return;
     }
 
@@ -143,7 +143,7 @@ class RotateLogs {
         .catchError((_) => false);
 
     if (!success) {
-      print('Failed to send batch');
+      log('Failed to send batch');
       return;
     }
 
